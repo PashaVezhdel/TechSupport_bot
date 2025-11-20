@@ -3,8 +3,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 
-from config import SUPPORT_IDS
-from app.db.database import tickets_collection, db
+from app.db.database import tickets_collection, db, get_support_ids
 from app.keyboards.support_keyboards import support_main_menu, support_accept_kb, support_work_kb
 from app.fsm.support_forms import RejectForm
 
@@ -19,7 +18,10 @@ async def notify_support_new_ticket(ticket, bot: Bot):
         f"⚙️ Пріоритет: {ticket['priority']}"
     )
     kb = support_accept_kb(ticket['ticket_id'])
-    for support_id in SUPPORT_IDS:
+    
+    support_ids = get_support_ids()
+    
+    for support_id in support_ids:
         try:
             if ticket.get("image"):
                 if ticket.get("file_type") == 'photo':
@@ -46,10 +48,13 @@ async def view_all_active_tickets(msg: types.Message):
     tickets = list(tickets_collection.find({
         "status": {"$in": ["Очікує", "Прийнята"]}
     }).sort("created_at", 1))
+
     if not tickets:
         await msg.answer("✅ Активних заявок немає.")
         return
+    
     await msg.answer(f"Знайдено активних заявок: {len(tickets)}")
+    
     for ticket in tickets:
         text = (
             f"<b>Заявка #{ticket['ticket_id']} ({ticket['status']})</b>\n"
@@ -57,11 +62,13 @@ async def view_all_active_tickets(msg: types.Message):
             f"📄 {ticket['description']}\n"
             f"⚙️ Пріоритет: {ticket['priority']}"
         )
+        
         if ticket['status'] == 'Очікує':
             kb = support_accept_kb(ticket['ticket_id'])
         else: 
             text += f"\n\n👨‍💻 <b>Прийняв:</b> @{ticket.get('accepted_by', '???')}"
             kb = support_work_kb(ticket['ticket_id'])
+            
         await msg.answer(text, reply_markup=kb)
 
 @router.message(F.text == "📖 Історія всіх заявок")
@@ -69,9 +76,11 @@ async def view_history_all(msg: types.Message):
     tickets = list(tickets_collection.find({
         "status": {"$in": ["Завершена", "Відхилена", "Скасована"]}
     }).sort("created_at", -1).limit(20))
+
     if not tickets:
         await msg.answer("Архів порожній.")
         return
+
     for t in tickets:
         status_icon = "✅" if t['status'] == "Завершена" else "❌"
         txt = f"{status_icon} <b>#{t['ticket_id']}</b> | {t['status']}\n{t['description']}"
@@ -92,18 +101,24 @@ async def check_db_status(msg: types.Message):
 async def accept_ticket(query: types.CallbackQuery, bot: Bot):
     ticket_id = query.data.split("|")[1]
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
+    
     if not ticket:
         await query.answer("Заявку не знайдено.", show_alert=True)
         return
+    
     if ticket["status"] != "Очікує":
-        await query.answer(f"Статус заявки вже: {ticket['status']}", show_alert=True)
+        await query.answer(f"Запізно! Статус заявки вже: {ticket['status']}", show_alert=True)
         await query.message.edit_text(f"🔒 Заявка #{ticket_id} вже оброблена ({ticket['status']}).")
         return
+
     tickets_collection.update_one(
         {"ticket_id": ticket_id},
         {"$set": {"status": "Прийнята", "accepted_by": query.from_user.username}}
     )
-    await notify_user(bot, ticket["telegram_id"], f"👨‍💻 Вашу заявку #{ticket_id} прийняв оператор @{query.from_user.username}.")
+
+    await notify_user(bot, ticket["telegram_id"], 
+                      f"👨‍💻 Вашу заявку #{ticket_id} прийняв оператор @{query.from_user.username}.")
+
     new_text = (
         f"<b>Заявка #{ticket_id} (В роботі)</b>\n"
         f"👤 {ticket['name']} | 📞 {ticket['phone']}\n"
@@ -118,14 +133,18 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
 async def complete_ticket(query: types.CallbackQuery, bot: Bot): 
     ticket_id = query.data.split("|")[1]
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
+
     if not ticket or ticket['status'] != "Прийнята":
          await query.answer("Цю заявку вже не можна завершити.", show_alert=True)
          return
+    
     tickets_collection.update_one(
         {"ticket_id": ticket_id},
         {"$set": {"status": "Завершена"}}
     )
+    
     await notify_user(bot, ticket["telegram_id"], f"✅ Вашу заявку #{ticket_id} успішно виконано/завершено.")
+
     await query.message.edit_text(f"✅ Заявка #{ticket_id} завершена.")
     await query.answer("Готово!")
 
@@ -133,9 +152,11 @@ async def complete_ticket(query: types.CallbackQuery, bot: Bot):
 async def reject_ticket_start(query: types.CallbackQuery, state: FSMContext):
     ticket_id = query.data.split("|")[1]
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
+    
     if not ticket:
          await query.answer("Заявку не знайдено.", show_alert=True)
          return
+         
     if ticket["status"] in ["Відхилена", "Скасована", "Завершена"]:
         await query.answer(f"Ця заявка вже закрита (статус: {ticket['status']}).", show_alert=True)
         try:
@@ -143,12 +164,14 @@ async def reject_ticket_start(query: types.CallbackQuery, state: FSMContext):
         except:
             pass
         return 
+    
     await state.update_data(
         ticket_id=ticket_id,
         chat_id=query.message.chat.id,
         msg_id=query.message.message_id
     )
     await state.set_state(RejectForm.reason)
+    
     await query.message.answer(f"✍️ Введіть причину відхилення для заявки <b>#{ticket_id}</b>:")
     await query.answer()
 
@@ -157,13 +180,17 @@ async def process_rejection_reason(msg: types.Message, state: FSMContext, bot: B
     data = await state.get_data()
     ticket_id = data["ticket_id"]
     reason = msg.text
+
     tickets_collection.update_one(
         {"ticket_id": ticket_id},
         {"$set": {"status": "Відхилена", "decline_reason": reason}}
     )
+
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     if ticket:
-        await notify_user(bot, ticket["telegram_id"], f"❌ Вашу заявку #{ticket_id} відхилено.\n<b>Причина:</b> {reason}")
+        await notify_user(bot, ticket["telegram_id"], 
+                          f"❌ Вашу заявку #{ticket_id} відхилено.\n<b>Причина:</b> {reason}")
+
     try:
         await bot.edit_message_text(
             chat_id=data['chat_id'],
@@ -173,5 +200,6 @@ async def process_rejection_reason(msg: types.Message, state: FSMContext, bot: B
         )
     except TelegramBadRequest:
         await msg.answer(f"❌ Заявку #{ticket_id} відхилено.")
+
     await msg.answer("Причину збережено.")
     await state.clear()

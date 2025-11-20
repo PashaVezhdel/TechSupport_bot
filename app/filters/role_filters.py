@@ -1,11 +1,11 @@
 from aiogram.filters import BaseFilter
 from aiogram.types import Message, CallbackQuery
-from config import SUPPORT_IDS
+from app.db.database import is_support
 
 class IsSupport(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
-        return event.from_user.id in SUPPORT_IDS
+        return is_support(event.from_user.id)
 
 class IsNotSupport(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
-        return event.from_user.id not in SUPPORT_IDS
+        return not is_support(event.from_user.id)
