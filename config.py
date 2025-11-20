@@ -1,4 +1,11 @@
-BOT_TOKEN = "8163743858:AAEbnC2meFZQlaH_cofuqx2dGDiw6JqED6M"
-MONGO_URI = "mongodb://localhost:27017/"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
 DB_NAME = "support_db"
-SUPPORT_IDS = [1233779320]
+
+support_ids_str = os.getenv("SUPPORT_IDS", "")
+SUPPORT_IDS = [int(x) for x in support_ids_str.split(",") if x.strip().isdigit()]
