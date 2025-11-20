@@ -8,6 +8,7 @@ from config import BOT_TOKEN
 from app.filters.role_filters import IsSupport, IsNotSupport
 from app.handlers import user_handlers
 from app.handlers import support_handlers
+from app.handlers.error_handler import error_router
 
 async def main():
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -21,6 +22,7 @@ async def main():
 
     dp.include_router(support_handlers.router)
     dp.include_router(user_handlers.router)
+    dp.include_router(error_router)
     
     print("Bot started...")
     await bot.delete_webhook(drop_pending_updates=True)
