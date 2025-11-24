@@ -1,3 +1,4 @@
+import logging
 from aiogram import Router, F, types, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -13,6 +14,7 @@ from app.keyboards.support_keyboards import (
 from app.fsm.support_forms import RejectForm
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 async def notify_support_new_ticket(ticket, bot: Bot):
     text = (
@@ -35,14 +37,14 @@ async def notify_support_new_ticket(ticket, bot: Bot):
                     await bot.send_document(chat_id=support_id, document=ticket["image"], caption=text, reply_markup=kb)
             else:
                 await bot.send_message(chat_id=support_id, text=text, reply_markup=kb)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to notify support {support_id}: {e}")
 
 async def notify_user(bot: Bot, chat_id: int, text: str):
     try:
         await bot.send_message(chat_id=chat_id, text=text)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to notify user {chat_id}: {e}")
 
 @router.message(Command("start"))
 async def start_cmd_support(msg: types.Message):
@@ -56,7 +58,9 @@ async def server_call_reaction(query: types.CallbackQuery, bot: Bot):
     
     responder_name = query.from_user.full_name
     original_text = query.message.html_text if query.message.html_text else query.message.caption
-    if not original_text: original_text = "🔔 ВИКЛИК"
+    if not original_text: original_text = "🔔 Виклик"
+
+    logger.info(f"Support {query.from_user.id} reacted to call: {action}")
 
     if action == "yes":
         new_text = f"{original_text}\n\n✅ <b>Ви підтвердили: 👍!</b>"
@@ -112,7 +116,8 @@ async def view_all_active_tickets(msg: types.Message):
                     await msg.answer_document(document=ticket["image"], caption=text, reply_markup=kb)
             else:
                 await msg.answer(text, reply_markup=kb)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Media error for ticket {ticket['ticket_id']}: {e}")
             await msg.answer(text + "\n(Медіа недоступне)", reply_markup=kb)
 
 @router.message(F.text == "📖 Історія всіх заявок")
@@ -139,6 +144,7 @@ async def check_db_status(msg: types.Message):
         count = tickets_collection.count_documents({})
         await msg.answer(f"✅ З'єднання стабільне.\nВсього заявок у базі: {count}")
     except Exception as e:
+        logger.critical(f"DB Connection Error: {e}")
         await msg.answer(f"❌ Помилка з'єднання: {e}")
 
 @router.callback_query(F.data.startswith("accept|"))
@@ -151,7 +157,7 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
         return
     
     if ticket["status"] != "Очікує":
-        await query.answer(f"Запізно! Статус заявки вже: {ticket['status']}", show_alert=True)
+        await query.answer(f"Статус: {ticket['status']}", show_alert=True)
         try:
             await query.message.edit_reply_markup(reply_markup=None)
         except:
@@ -162,6 +168,8 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
         {"ticket_id": ticket_id},
         {"$set": {"status": "Прийнята", "accepted_by": query.from_user.username}}
     )
+    
+    logger.info(f"Admin {query.from_user.id} accepted ticket {ticket_id}")
 
     await notify_user(bot, ticket["telegram_id"], 
                       f"👨‍💻 Вашу заявку #{ticket_id} прийняв оператор @{query.from_user.username}.")
@@ -198,6 +206,7 @@ async def complete_ticket(query: types.CallbackQuery, bot: Bot):
         {"$set": {"status": "Завершена"}}
     )
     
+    logger.info(f"Admin {query.from_user.id} completed ticket {ticket_id}")
     await notify_user(bot, ticket["telegram_id"], f"✅ Вашу заявку #{ticket_id} успішно виконано.")
 
     final_text = f"✅ Заявка #{ticket_id} завершена."
@@ -248,6 +257,7 @@ async def process_rejection_reason(msg: types.Message, state: FSMContext, bot: B
         {"ticket_id": ticket_id},
         {"$set": {"status": "Відхилена", "decline_reason": reason}}
     )
+    logger.info(f"Admin {msg.from_user.id} rejected ticket {ticket_id} (Reason: {reason})")
 
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     if ticket:

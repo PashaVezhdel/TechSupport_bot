@@ -24,10 +24,14 @@ async def main():
     dp.include_router(user_handlers.router)
     dp.include_router(error_router)
     
-    print("Bot started...")
+    logging.info("Bot started...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        stream=sys.stdout
+    )
     asyncio.run(main())

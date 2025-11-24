@@ -1,12 +1,21 @@
+import logging
 from pymongo import MongoClient
 from config import MONGO_URI, DB_NAME
 
-client = MongoClient(MONGO_URI)
-db = client[DB_NAME]
+logger = logging.getLogger(__name__)
 
-users_collection = db["users"]
-tickets_collection = db["tickets"]
-admins_collection = db["admins"]
+try:
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+
+    users_collection = db["users"]
+    tickets_collection = db["tickets"]
+    admins_collection = db["admins"]
+    
+    client.admin.command('ping')
+    logger.info("Connected to MongoDB Atlas")
+except Exception as e:
+    logger.critical(f"Failed to connect to MongoDB: {e}")
 
 def get_support_ids():
     admins = admins_collection.find({})
@@ -21,5 +30,6 @@ def add_support(user_id, username=None):
             "telegram_id": user_id, 
             "username": username
         })
+        logger.info(f"New admin added: {user_id} ({username})")
         return True
     return False
