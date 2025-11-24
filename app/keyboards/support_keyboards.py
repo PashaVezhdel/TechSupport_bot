@@ -26,3 +26,13 @@ def support_work_kb(ticket_id):
             ]
         ]
     )
+
+def server_call_kb(initiator_id):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👍", callback_data=f"srv_reply|yes|{initiator_id}"),
+                InlineKeyboardButton(text="👎", callback_data=f"srv_reply|no|{initiator_id}")
+            ]
+        ]
+    )

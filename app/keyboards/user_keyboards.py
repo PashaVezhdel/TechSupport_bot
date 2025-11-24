@@ -4,7 +4,8 @@ def main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📝 Створити заявку")],
-            [KeyboardButton(text="📜 Історія заявок")],
+            # Змінив текст кнопки тут:
+            [KeyboardButton(text="📜 Історія заявок"), KeyboardButton(text="🔔 Виклик в серверну")],
             [KeyboardButton(text="❌ Скасувати заявку")]
         ],
         resize_keyboard=True

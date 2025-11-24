@@ -1,27 +1,72 @@
 import uuid
 import re
+import logging
 from datetime import datetime
 from aiogram import F, types, Bot, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
 
 from app.db.database import users_collection, tickets_collection
 from app.keyboards.user_keyboards import main_menu, contact_request_kb, skip_button, priority_keyboard
+from app.keyboards.support_keyboards import server_call_kb
 from app.fsm.user_forms import TicketForm
 
+
 router = Router()
+logger = logging.getLogger(__name__)
 
 @router.message(Command("start"))
 async def start_cmd(msg: types.Message):
-    user = users_collection.find_one({"telegram_id": msg.from_user.id})
-    if not user:
-        users_collection.insert_one({
-            "telegram_id": msg.from_user.id,
-            "username": msg.from_user.username,
-            "registered_at": datetime.utcnow()
-        })
-    await msg.answer("👋 Вітаю у боті техпідтримки!", reply_markup=main_menu())
+    try:
+        user = users_collection.find_one({"telegram_id": msg.from_user.id})
+        if not user:
+            users_collection.insert_one({
+                "telegram_id": msg.from_user.id,
+                "username": msg.from_user.username,
+                "registered_at": datetime.utcnow()
+            })
+            logger.info(f"Новий користувач зареєстрований: {msg.from_user.id}")
+        
+        await msg.answer("👋 Вітаю у боті техпідтримки!", reply_markup=main_menu())
+    except Exception as e:
+        logger.error(f"Помилка в start_cmd: {e}")
+
+
+@router.message(F.text == "🔔 Виклик в серверну")
+async def call_server_room(msg: types.Message, bot: Bot):
+    initiator_id = msg.from_user.id
+    
+    last_ticket = tickets_collection.find_one(
+        {"telegram_id": initiator_id},
+        sort=[("created_at", -1)]
+    )
+    user_phone = last_ticket.get("phone", "Не вказано") if last_ticket else "Не вказано"
+    
+    alert_text = (
+        f"🔔 <b>Виклик до серверної</b>\n\n"
+        f"👤 Ініціатор: <b>{msg.from_user.full_name}</b>\n"
+        f"📞 Тел: <b>{user_phone}</b>"
+    )
+    
+    from app.db.database import get_support_ids
+    support_ids = get_support_ids()
+    count = 0
+    
+    for support_id in support_ids:
+        try:
+            await bot.send_message(
+                chat_id=support_id, 
+                text=alert_text, 
+                reply_markup=server_call_kb(initiator_id)
+            )
+            count += 1
+        except Exception:
+            pass
+            
+    await msg.answer(f"✅ Сповіщення надіслано.", reply_markup=main_menu())
+
 
 @router.message(F.text == "📝 Створити заявку")
 async def create_ticket(msg: types.Message, state: FSMContext):
@@ -120,23 +165,28 @@ async def get_priority(msg: types.Message, state: FSMContext, bot: Bot):
         "decline_reason": None
     }
     
-    tickets_collection.insert_one(ticket)
-    await msg.answer("✅ Заявку створено! Очікуйте відповіді.", reply_markup=main_menu())
-    
     try:
+        tickets_collection.insert_one(ticket)
+        logger.info(f"Створено нову заявку #{ticket_id} від користувача {msg.from_user.id}")
+        await msg.answer("✅ Заявку створено! Очікуйте відповіді.", reply_markup=main_menu())
+        
         from app.handlers.support_handlers import notify_support_new_ticket
         await notify_support_new_ticket(ticket, bot)
-    except Exception:
-        pass
+        
+    except Exception as e:
+        logger.error(f"Помилка при створенні заявки {ticket_id}: {e}")
+        await msg.answer("❌ Сталася помилка при збереженні заявки. Спробуйте пізніше.")
 
     await state.clear()
 
 @router.message(F.text == "📜 Історія заявок")
 async def history(msg: types.Message):
     tickets = list(tickets_collection.find({"telegram_id": msg.from_user.id}).sort("created_at", -1))
+    
     if not tickets:
         await msg.answer("У вас ще немає заявок.")
         return
+    
     for t in tickets:
         status_emoji = "⏳" if t['status'] == "Очікує" else "✅" if t['status'] == "Завершена" else "❌"
         txt = f"<b>#{t['ticket_id']} | {status_emoji} {t['status']} | {t['priority']}</b>\n{t['description']}"
@@ -150,9 +200,11 @@ async def cancel_list(msg: types.Message):
         "telegram_id": msg.from_user.id,
         "status": {"$in": ["Очікує", "Прийнята"]}
     }))
+    
     if not tickets:
         await msg.answer("Немає активних заявок для скасування.")
         return
+    
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"❌ #{t['ticket_id']} ({t['priority']})", callback_data=f"user_cancel|{t['ticket_id']}")]
@@ -167,17 +219,27 @@ async def user_cancel(cb: types.CallbackQuery):
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     
     if not ticket or ticket["telegram_id"] != cb.from_user.id:
-        await cb.answer("Помилка.", show_alert=True)
+        await cb.answer("Помилка доступу або заявка не знайдена.", show_alert=True)
         return
     
     if ticket.get("status") in ["Скасована", "Відхилена", "Завершена"]:
-        await cb.answer("Вже закрито.", show_alert=True)
-        await cb.message.edit_text("Ця заявка вже не активна.")
+        await cb.answer("Ця заявка вже закрита.", show_alert=True)
+        try:
+            await cb.message.edit_text("Ця заявка вже не активна.")
+        except TelegramBadRequest:
+            pass
         return
     
     tickets_collection.update_one(
         {"ticket_id": ticket_id},
         {"$set": {"status": "Скасована"}}
     )
-    await cb.message.edit_text(f"🗑 Вашу заявку #{ticket_id} успішно скасовано.")
+    
+    logger.info(f"Користувач {cb.from_user.id} скасував заявку {ticket_id}")
+    
+    try:
+        await cb.message.edit_text(f"🗑 Вашу заявку #{ticket_id} успішно скасовано.")
+    except TelegramBadRequest:
+        await cb.message.answer(f"🗑 Вашу заявку #{ticket_id} успішно скасовано.")
+        
     await cb.answer("Скасовано")
