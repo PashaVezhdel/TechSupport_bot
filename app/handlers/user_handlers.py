@@ -104,7 +104,7 @@ async def get_name_invalid(msg: types.Message):
 async def get_phone_contact(msg: types.Message, state: FSMContext):
     logger.info(f"User {msg.from_user.id} sent contact: {msg.contact.phone_number}")
     await state.update_data(phone=msg.contact.phone_number)
-    await msg.answer("Опишіть проблему:", reply_markup=ReplyKeyboardRemove())
+    await msg.answer("Введіть деталі заявки:", reply_markup=ReplyKeyboardRemove())
     await state.set_state(TicketForm.description)
 
 @router.message(TicketForm.phone, F.text)
