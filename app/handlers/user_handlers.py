@@ -1,7 +1,7 @@
 import uuid
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import F, types, Bot, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -26,49 +26,61 @@ async def start_cmd(msg: types.Message):
                 "username": msg.from_user.username,
                 "registered_at": datetime.utcnow()
             })
-            logger.info(f"New user registered: {msg.from_user.id} (@{msg.from_user.username})")
-        else:
-            logger.info(f"User {msg.from_user.id} started bot")
+            logger.info(f"New user registered: {msg.from_user.id}")
         
         await msg.answer("👋 Вітаю у боті техпідтримки!", reply_markup=main_menu())
     except Exception as e:
-        logger.error(f"Error in /start for user {msg.from_user.id}: {e}")
+        logger.error(f"Error in start_cmd: {e}")
 
 @router.message(F.text == "🔔 Виклик в серверну")
-async def call_master_instant(msg: types.Message, bot: Bot):
+async def call_server_room(msg: types.Message, bot: Bot):
     initiator_id = msg.from_user.id
+    
+    user = users_collection.find_one({"telegram_id": initiator_id})
+    if user and user.get("last_call_at"):
+        last_call = user["last_call_at"]
+        time_passed = datetime.utcnow() - last_call
+        if time_passed < timedelta(minutes=5):
+            wait_min = 5 - int(time_passed.total_seconds() / 60)
+            logger.warning(f"User {initiator_id} spam attempt blocked (wait {wait_min}m)")
+            await msg.answer(f"⏳ Занадто часто! Спробуйте через {wait_min} хв.")
+            return
+
+    users_collection.update_one(
+        {"telegram_id": initiator_id},
+        {"$set": {"last_call_at": datetime.utcnow()}},
+        upsert=True
+    )
+
     logger.info(f"User {initiator_id} initiated server room call")
     
-    try:
-        last_ticket = tickets_collection.find_one(
-            {"telegram_id": initiator_id},
-            sort=[("created_at", -1)]
-        )
-        user_phone = last_ticket.get("phone", "Не вказано") if last_ticket else "Не вказано"
-        
-        alert_text = (
-            f"🔔 <b>Виклик до серверної</b>\n\n"
-            f"👤 Ініціатор: <b>{msg.from_user.full_name}</b>\n"
-            f"📞 Тел: <b>{user_phone}</b>"
-        )
-        
-        support_ids = get_support_ids()
-        count = 0
-        
-        for support_id in support_ids:
-            try:
-                await bot.send_message(
-                    chat_id=support_id, 
-                    text=alert_text, 
-                    reply_markup=server_call_kb(initiator_id)
-                )
-                count += 1
-            except Exception as e:
-                logger.error(f"Failed to send alert to support {support_id}: {e}")
-                
-        await msg.answer(f"✅ Сповіщення надіслано.", reply_markup=main_menu())
-    except Exception as e:
-        logger.error(f"Error in call_master_instant: {e}")
+    last_ticket = tickets_collection.find_one(
+        {"telegram_id": initiator_id},
+        sort=[("created_at", -1)]
+    )
+    user_phone = last_ticket.get("phone", "Не вказано") if last_ticket else "Не вказано"
+    
+    alert_text = (
+        f"🔔 <b>Виклик до серверної</b>\n\n"
+        f"👤 Ініціатор: <b>{msg.from_user.full_name}</b>\n"
+        f"📞 Тел: <b>{user_phone}</b>"
+    )
+    
+    support_ids = get_support_ids()
+    count = 0
+    
+    for support_id in support_ids:
+        try:
+            await bot.send_message(
+                chat_id=support_id, 
+                text=alert_text, 
+                reply_markup=server_call_kb(initiator_id)
+            )
+            count += 1
+        except Exception as e:
+            logger.error(f"Failed to send alert to {support_id}: {e}")
+            
+    await msg.answer(f"✅ Сповіщення надіслано.", reply_markup=main_menu())
 
 @router.message(F.text == "📝 Створити заявку")
 async def create_ticket(msg: types.Message, state: FSMContext):
@@ -101,7 +113,7 @@ async def get_phone_text(msg: types.Message, state: FSMContext):
     clean_phone = re.sub(r'[^\d+]', '', phone_input)
     
     if not re.match(r'^\+?\d{10,15}$', clean_phone):
-        logger.warning(f"User {msg.from_user.id} entered invalid phone format: {phone_input}")
+        logger.warning(f"User {msg.from_user.id} entered invalid phone: {phone_input}")
         await msg.answer("❌ Некоректний формат.\nВведіть 10-15 цифр (наприклад 0991234567):")
         return
 
@@ -191,32 +203,28 @@ async def get_priority(msg: types.Message, state: FSMContext, bot: Bot):
         
     except Exception as e:
         logger.error(f"Failed to create/notify ticket {ticket_id}: {e}")
-        await msg.answer("❌ Помилка. Спробуйте пізніше.")
+        await msg.answer("❌ Сталася помилка при збереженні заявки. Спробуйте пізніше.")
 
     await state.clear()
 
 @router.message(F.text == "📜 Історія заявок")
 async def history(msg: types.Message):
     logger.info(f"User {msg.from_user.id} requested history")
-    try:
-        tickets = list(tickets_collection.find({"telegram_id": msg.from_user.id}).sort("created_at", -1))
-        
-        if not tickets:
-            await msg.answer("У вас ще немає заявок.")
-            return
-        
-        for t in tickets:
-            status_emoji = "⏳" if t['status'] == "Очікує" else "✅" if t['status'] == "Завершена" else "❌"
-            txt = f"<b>#{t['ticket_id']} | {status_emoji} {t['status']} | {t['priority']}</b>\n{t['description']}"
-            if t['status'] == 'Відхилена' and t.get('decline_reason'):
-                txt += f"\n\n🛑 <b>Причина відхилення:</b> {t['decline_reason']}"
-            await msg.answer(txt)
-    except Exception as e:
-        logger.error(f"Error fetching history for user {msg.from_user.id}: {e}")
+    tickets = list(tickets_collection.find({"telegram_id": msg.from_user.id}).sort("created_at", -1))
+    
+    if not tickets:
+        await msg.answer("У вас ще немає заявок.")
+        return
+    
+    for t in tickets:
+        status_emoji = "⏳" if t['status'] == "Очікує" else "✅" if t['status'] == "Завершена" else "❌"
+        txt = f"<b>#{t['ticket_id']} | {status_emoji} {t['status']} | {t['priority']}</b>\n{t['description']}"
+        if t['status'] == 'Відхилена' and t.get('decline_reason'):
+            txt += f"\n\n🛑 <b>Причина відхилення:</b> {t['decline_reason']}"
+        await msg.answer(txt)
 
 @router.message(F.text == "❌ Скасувати заявку")
 async def cancel_list(msg: types.Message):
-    logger.info(f"User {msg.from_user.id} requested cancel list")
     tickets = list(tickets_collection.find({
         "telegram_id": msg.from_user.id,
         "status": {"$in": ["Очікує", "Прийнята"]}
@@ -240,12 +248,11 @@ async def user_cancel(cb: types.CallbackQuery):
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     
     if not ticket or ticket["telegram_id"] != cb.from_user.id:
-        logger.warning(f"User {cb.from_user.id} tried to cancel invalid/other ticket {ticket_id}")
-        await cb.answer("Помилка.", show_alert=True)
+        await cb.answer("Помилка доступу або заявка не знайдена.", show_alert=True)
         return
     
     if ticket.get("status") in ["Скасована", "Відхилена", "Завершена"]:
-        await cb.answer("Вже закрито.", show_alert=True)
+        await cb.answer("Ця заявка вже закрита.", show_alert=True)
         try:
             await cb.message.edit_text("Ця заявка вже не активна.")
         except TelegramBadRequest:
@@ -256,7 +263,8 @@ async def user_cancel(cb: types.CallbackQuery):
         {"ticket_id": ticket_id},
         {"$set": {"status": "Скасована"}}
     )
-    logger.info(f"User {cb.from_user.id} cancelled ticket {ticket_id}")
+    
+    logger.info(f"Користувач {cb.from_user.id} скасував заявку {ticket_id}")
     
     try:
         await cb.message.edit_text(f"🗑 Вашу заявку #{ticket_id} успішно скасовано.")
