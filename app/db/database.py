@@ -11,6 +11,7 @@ try:
     users_collection = db["users"]
     tickets_collection = db["tickets"]
     admins_collection = db["admins"]
+    broadcasts_collection = db["broadcasts"]
     
     client.admin.command('ping')
     logger.info("Connected to MongoDB Atlas")
@@ -33,3 +34,7 @@ def add_support(user_id, username=None):
         logger.info(f"New admin added: {user_id} ({username})")
         return True
     return False
+
+def get_all_users():
+    users = users_collection.find({})
+    return [user["telegram_id"] for user in users]

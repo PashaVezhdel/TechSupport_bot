@@ -1,17 +1,20 @@
 import logging
+from datetime import datetime
 from aiogram import Router, F, types, Bot
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import ReplyKeyboardRemove
 
-from app.db.database import tickets_collection, db, get_support_ids
+from app.db.database import tickets_collection, db, get_support_ids, broadcasts_collection, get_all_users
 from app.keyboards.support_keyboards import (
     support_main_menu, 
     support_accept_kb, 
     support_work_kb, 
-    server_call_kb
+    server_call_kb,
+    broadcast_confirm_kb,
+    skip_media_kb
 )
-from app.fsm.support_forms import RejectForm
+from app.fsm.support_forms import RejectForm, BroadcastForm
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -58,7 +61,7 @@ async def server_call_reaction(query: types.CallbackQuery, bot: Bot):
     
     responder_name = query.from_user.full_name
     original_text = query.message.html_text if query.message.html_text else query.message.caption
-    if not original_text: original_text = "🔔 Виклик"
+    if not original_text: original_text = "🔔 ВИКЛИК"
 
     logger.info(f"Support {query.from_user.id} reacted to call: {action}")
 
@@ -79,6 +82,140 @@ async def server_call_reaction(query: types.CallbackQuery, bot: Bot):
     except Exception:
         pass
 
+    await query.answer()
+
+@router.message(F.text == "📨 Створити розсилку")
+async def start_broadcast(msg: types.Message, state: FSMContext):
+    await state.set_state(BroadcastForm.waiting_for_text)
+    await msg.answer(
+        "✍️ Введіть текст повідомлення для розсилки:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+@router.message(BroadcastForm.waiting_for_text)
+async def process_broadcast_text(msg: types.Message, state: FSMContext):
+    if not msg.text:
+        await msg.answer("❌ Будь ласка, надішліть текст.")
+        return
+        
+    await state.update_data(broadcast_text=msg.text, admin_id=msg.from_user.id)
+    await state.set_state(BroadcastForm.waiting_for_media)
+    
+    await msg.answer(
+        "📷 Прикріпіть медіа (фото, відео, документ) або натисніть 'Пропустити':",
+        reply_markup=skip_media_kb()
+    )
+
+@router.message(BroadcastForm.waiting_for_media, F.text == "Пропустити")
+async def skip_broadcast_media(msg: types.Message, state: FSMContext):
+    await state.update_data(content_type='text', content_id=None)
+    await show_broadcast_preview(msg, state)
+
+@router.message(BroadcastForm.waiting_for_media)
+async def process_broadcast_media(msg: types.Message, state: FSMContext):
+    content_type = None
+    content_id = None
+    
+    if msg.photo:
+        content_type = 'photo'
+        content_id = msg.photo[-1].file_id
+    elif msg.video:
+        content_type = 'video'
+        content_id = msg.video.file_id
+    elif msg.document:
+        content_type = 'document'
+        content_id = msg.document.file_id
+    else:
+        await msg.answer("❌ Непідтримуваний тип. Надішліть фото, відео, документ або натисніть 'Пропустити'.")
+        return
+
+    await state.update_data(content_type=content_type, content_id=content_id)
+    await show_broadcast_preview(msg, state)
+
+async def show_broadcast_preview(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    text = data['broadcast_text']
+    c_type = data['content_type']
+    c_id = data['content_id']
+    
+    await msg.answer("👁 <b>Попередній перегляд:</b>", reply_markup=ReplyKeyboardRemove())
+    
+    try:
+        if c_type == 'photo':
+            await msg.answer_photo(photo=c_id, caption=text)
+        elif c_type == 'video':
+            await msg.answer_video(video=c_id, caption=text)
+        elif c_type == 'document':
+            await msg.answer_document(document=c_id, caption=text)
+        else:
+            await msg.answer(text)
+    except Exception as e:
+        logger.error(f"Preview error: {e}")
+        await msg.answer("❌ Помилка медіа. Спробуйте ще раз.")
+        return
+
+    await msg.answer("Надіслати всім користувачам?", reply_markup=broadcast_confirm_kb())
+    await state.set_state(BroadcastForm.waiting_for_confirm)
+
+@router.callback_query(BroadcastForm.waiting_for_confirm, F.data == "broadcast_cancel")
+async def cancel_broadcast(query: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await query.message.edit_reply_markup(reply_markup=None)
+    await query.message.answer("❌ Розсилку скасовано.", reply_markup=support_main_menu())
+    await query.answer()
+
+@router.callback_query(BroadcastForm.waiting_for_confirm, F.data == "broadcast_send")
+async def send_broadcast(query: types.CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    content_type = data['content_type']
+    content_id = data['content_id']
+    text = data['broadcast_text']
+    admin_id = data['admin_id']
+    
+    await query.message.edit_reply_markup(reply_markup=None)
+    status_msg = await query.message.answer("⏳ Розсилка почалася...")
+    
+    users = get_all_users()
+    count_ok = 0
+    count_fail = 0
+    
+    for user_id in users:
+        try:
+            if content_type == 'photo':
+                await bot.send_photo(chat_id=user_id, photo=content_id, caption=text)
+            elif content_type == 'video':
+                await bot.send_video(chat_id=user_id, video=content_id, caption=text)
+            elif content_type == 'document':
+                await bot.send_document(chat_id=user_id, document=content_id, caption=text)
+            else:
+                await bot.send_message(chat_id=user_id, text=text)
+            count_ok += 1
+        except Exception:
+            count_fail += 1
+    
+    broadcasts_collection.insert_one({
+        "admin_id": admin_id,
+        "content_type": content_type,
+        "content_id": content_id,
+        "text": text,
+        "recipients_count": count_ok,
+        "date": datetime.utcnow()
+    })
+    
+    logger.info(f"Broadcast sent by {admin_id}. OK: {count_ok}, Fail: {count_fail}")
+    
+    try:
+        await status_msg.delete()
+    except:
+        pass
+
+    await query.message.answer(
+        f"✅ Розсилку завершено!\n"
+        f"Успішно: {count_ok}\n"
+        f"Не доставлено: {count_fail}",
+        reply_markup=support_main_menu()
+    )
+    await state.clear()
     await query.answer()
 
 @router.message(F.text == "📢 Активні заявки")

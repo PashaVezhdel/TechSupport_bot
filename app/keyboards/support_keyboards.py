@@ -3,7 +3,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 def support_main_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📢 Активні заявки")],
+            [KeyboardButton(text="📢 Активні заявки"), KeyboardButton(text="📨 Створити розсилку")],
             [KeyboardButton(text="📖 Історія всіх заявок"), KeyboardButton(text="⚙️ Стан БД")]
         ],
         resize_keyboard=True
@@ -33,6 +33,25 @@ def server_call_kb(initiator_id):
             [
                 InlineKeyboardButton(text="👍", callback_data=f"srv_reply|yes|{initiator_id}"),
                 InlineKeyboardButton(text="👎", callback_data=f"srv_reply|no|{initiator_id}")
+            ]
+        ]
+    )
+
+def skip_media_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Пропустити")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+def broadcast_confirm_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Надіслати", callback_data="broadcast_send"),
+                InlineKeyboardButton(text="❌ Скасувати", callback_data="broadcast_cancel")
             ]
         ]
     )

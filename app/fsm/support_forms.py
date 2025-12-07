@@ -6,3 +6,8 @@ class RejectForm(StatesGroup):
     chat_id = State()
     msg_id = State()
     status_before = State()
+
+class BroadcastForm(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_media = State()
+    waiting_for_confirm = State()
