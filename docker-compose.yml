@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: techsupport_bot
+    restart: always
+    env_file:
+      - .env
+    stop_signal: SIGINT
