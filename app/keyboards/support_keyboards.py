@@ -20,14 +20,15 @@ def super_admin_main_menu():
         resize_keyboard=True
     )
 
-def admin_management_kb():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="➕ Додати адміна", callback_data="admin_add")
-    builder.button(text="➖ Видалити адміна", callback_data="admin_del")
-    builder.button(text="📋 Список адмінів", callback_data="admin_list")
-    builder.button(text="❌ Закрити меню", callback_data="admin_close_menu")
-    builder.adjust(1)
-    return builder.as_markup()
+def admin_management_reply_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Додати адміна"), KeyboardButton(text="➖ Видалити адміна")],
+            [KeyboardButton(text="📋 Список адмінів")],
+            [KeyboardButton(text="🔙 Назад до головного меню")]
+        ],
+        resize_keyboard=True
+    )
 
 def delete_admin_list_kb(admins_list):
     builder = InlineKeyboardBuilder()
@@ -61,8 +62,8 @@ def support_work_kb(ticket_id):
 
 def server_call_kb(initiator_id):
     builder = InlineKeyboardBuilder()
-    builder.button(text="👍", callback_data=f"srv_reply|yes|{initiator_id}")
-    builder.button(text="👎", callback_data=f"srv_reply|no|{initiator_id}")
+    builder.button(text="👍 Буду", callback_data=f"srv_reply|yes|{initiator_id}")
+    builder.button(text="👎 Не зможу", callback_data=f"srv_reply|no|{initiator_id}")
     builder.adjust(2)
     return builder.as_markup()
 
