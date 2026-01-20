@@ -1,23 +1,206 @@
 import logging
 from datetime import datetime
 from aiogram import Router, F, types, Bot
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
 
-from app.db.database import tickets_collection, db, get_support_ids, broadcasts_collection, get_all_users
+from app.db.database import (
+    tickets_collection, db, get_support_ids, broadcasts_collection, 
+    get_all_users, is_super_admin, 
+    add_support, remove_support, get_all_admins_details
+)
+
 from app.keyboards.support_keyboards import (
     support_main_menu, 
     support_accept_kb, 
     support_work_kb, 
     server_call_kb,
     broadcast_confirm_kb,
-    skip_media_kb
+    skip_media_kb,
+    super_admin_main_menu,
+    admin_management_kb,
+    delete_admin_list_kb,
+    cancel_kb
 )
-from app.fsm.support_forms import RejectForm, BroadcastForm
+from app.fsm.support_forms import RejectForm, BroadcastForm, AdminManageForm
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+@router.message(Command("start"))
+async def start_cmd_support(msg: types.Message):
+    if is_super_admin(msg.from_user.id):
+        await msg.answer("👋 Вітаю, Шеф! Ви в панелі Супер-Адміністратора.", reply_markup=super_admin_main_menu())
+    else:
+        await msg.answer("👋 Вітаю у панелі техпідтримки!", reply_markup=support_main_menu())
+
+@router.message(F.text == "👥 Керування персоналом", StateFilter("*"))
+async def open_staff_management(msg: types.Message, state: FSMContext, bot: Bot):
+    if not is_super_admin(msg.from_user.id):
+        await msg.answer("⛔ Доступ заборонено.")
+        return
+
+    data = await state.get_data()
+    old_menu_id = data.get("admin_menu_msg_id")
+
+    if old_menu_id:
+        try:
+            await bot.delete_message(chat_id=msg.chat.id, message_id=old_menu_id)
+        except:
+            pass
+    
+    await state.clear()
+
+    menu_msg = await msg.answer("Оберіть дію:", reply_markup=admin_management_kb())
+    await state.update_data(admin_menu_msg_id=menu_msg.message_id)
+
+@router.callback_query(F.data == "admin_list")
+async def show_admin_list(query: types.CallbackQuery):
+    if not is_super_admin(query.from_user.id): return
+    
+    admins = get_all_admins_details()
+    text = "📋 <b>Список адміністраторів:</b>\n\n"
+    for i, admin in enumerate(admins, 1):
+        role_icon = "👑" if admin.get("is_super_admin") else "👤"
+        username = f"@{admin.get('username')}" if admin.get('username') else "NoName"
+        text += f"{i}. {role_icon} <code>{admin['telegram_id']}</code> - {username}\n"
+    
+    try:
+        await query.message.edit_text(text, reply_markup=admin_management_kb())
+    except Exception:
+        await query.answer()
+
+@router.callback_query(F.data == "admin_add")
+async def start_add_admin(query: types.CallbackQuery, state: FSMContext):
+    if not is_super_admin(query.from_user.id): return
+    
+    await state.update_data(admin_menu_msg_id=query.message.message_id)
+    
+    try:
+        await query.message.edit_text(
+            "✍️ Введіть <b>Telegram ID</b> нового співробітника:\n"
+            "(ID можна дізнатися через @userinfobot)", 
+            reply_markup=cancel_kb()
+        )
+    except Exception:
+        pass
+    
+    await state.set_state(AdminManageForm.waiting_for_new_admin_id)
+    await query.answer()
+
+@router.message(AdminManageForm.waiting_for_new_admin_id)
+async def process_add_admin(msg: types.Message, state: FSMContext, bot: Bot):
+    try:
+        await msg.delete()
+    except:
+        pass
+
+    data = await state.get_data()
+    menu_msg_id = data.get("admin_menu_msg_id")
+    if menu_msg_id:
+        try:
+            await bot.delete_message(chat_id=msg.chat.id, message_id=menu_msg_id)
+        except:
+            pass
+
+    try:
+        new_id = int(msg.text.strip())
+        
+        try:
+            chat_info = await bot.get_chat(new_id)
+            username = chat_info.username if chat_info.username else chat_info.full_name
+        except Exception:
+            username = "New Admin"
+
+        if add_support(new_id, username):
+            result_text = f"✅ Користувача <code>{new_id}</code> ({username}) успішно додано!"
+        else:
+            result_text = "⚠️ Цей користувач вже є в списку."
+        
+        await state.clear()
+        
+        new_menu = await msg.answer(result_text, reply_markup=admin_management_kb())
+        await state.update_data(admin_menu_msg_id=new_menu.message_id)
+            
+    except ValueError:
+        await msg.answer("❌ Це не схоже на ID. Спробуйте ще раз.", reply_markup=cancel_kb())
+        return
+
+@router.callback_query(F.data == "admin_del")
+async def start_del_admin_menu(query: types.CallbackQuery):
+    if not is_super_admin(query.from_user.id): return
+    
+    admins = get_all_admins_details()
+    my_id = query.from_user.id
+    filtered_admins = [a for a in admins if a['telegram_id'] != my_id and not a.get('is_super_admin')]
+
+    if not filtered_admins:
+        await query.answer("❌ Немає кого видаляти.", show_alert=True)
+        return
+
+    try:
+        await query.message.edit_text(
+            "🗑 <b>Оберіть адміністратора для звільнення:</b>", 
+            reply_markup=delete_admin_list_kb(filtered_admins)
+        )
+    except Exception:
+        await query.answer()
+
+@router.callback_query(F.data.startswith("del_adm|"))
+async def finish_del_admin(query: types.CallbackQuery, state: FSMContext):
+    if not is_super_admin(query.from_user.id): return
+
+    target_id = int(query.data.split("|")[1])
+    
+    if remove_support(target_id):
+        text = f"✅ Адміністратора <code>{target_id}</code> видалено."
+        await query.answer("✅ Видалено!")
+    else:
+        text = "❌ Помилка при видаленні."
+        await query.answer("❌ Помилка.", show_alert=True)
+    
+    try:
+        await query.message.edit_text(text, reply_markup=admin_management_kb())
+    except Exception:
+        await query.message.delete()
+        new_menu = await query.message.answer(text, reply_markup=admin_management_kb())
+        await state.update_data(admin_menu_msg_id=new_menu.message_id)
+        return
+
+    await state.clear()
+    await state.update_data(admin_menu_msg_id=query.message.message_id)
+
+@router.callback_query(F.data == "admin_cancel")
+async def admin_cancel_action(query: types.CallbackQuery, state: FSMContext):
+    current_msg_id = query.message.message_id
+    await state.clear()
+    await state.update_data(admin_menu_msg_id=current_msg_id)
+    try:
+        await query.message.edit_text("Оберіть дію:", reply_markup=admin_management_kb())
+    except Exception:
+        pass
+    await query.answer()
+
+@router.callback_query(F.data == "admin_back")
+async def admin_back_btn(query: types.CallbackQuery, state: FSMContext):
+    current_msg_id = query.message.message_id
+    await state.clear()
+    await state.update_data(admin_menu_msg_id=current_msg_id)
+    try:
+        await query.message.edit_text("Оберіть дію:", reply_markup=admin_management_kb())
+    except Exception:
+        await query.answer()
+
+@router.callback_query(F.data == "admin_close_menu")
+async def close_admin_menu(query: types.CallbackQuery, state: FSMContext):
+    await state.update_data(admin_menu_msg_id=None)
+    await state.clear()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    await query.answer()
 
 async def notify_support_new_ticket(ticket, bot: Bot):
     text = (
@@ -48,10 +231,6 @@ async def notify_user(bot: Bot, chat_id: int, text: str):
         await bot.send_message(chat_id=chat_id, text=text)
     except Exception as e:
         logger.warning(f"Failed to notify user {chat_id}: {e}")
-
-@router.message(Command("start"))
-async def start_cmd_support(msg: types.Message):
-    await msg.answer("👋 Вітаю у панелі техпідтримки!", reply_markup=support_main_menu())
 
 @router.callback_query(F.data.startswith("srv_reply|"))
 async def server_call_reaction(query: types.CallbackQuery, bot: Bot):

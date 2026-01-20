@@ -25,15 +25,32 @@ def get_support_ids():
 def is_support(user_id):
     return admins_collection.find_one({"telegram_id": user_id}) is not None
 
+def is_super_admin(user_id):
+    user = admins_collection.find_one({"telegram_id": user_id})
+    if user and user.get("is_super_admin") is True:
+        return True
+    return False
+
 def add_support(user_id, username=None):
     if not is_support(user_id):
         admins_collection.insert_one({
             "telegram_id": user_id, 
-            "username": username
+            "username": username,
+            "is_super_admin": False 
         })
         logger.info(f"New admin added: {user_id} ({username})")
         return True
     return False
+
+def remove_support(user_id):
+    result = admins_collection.delete_one({"telegram_id": user_id})
+    if result.deleted_count > 0:
+        logger.info(f"Admin removed: {user_id}")
+        return True
+    return False
+
+def get_all_admins_details():
+    return list(admins_collection.find({}, {"_id": 0, "telegram_id": 1, "username": 1, "is_super_admin": 1}))
 
 def get_all_users():
     users = users_collection.find({})
