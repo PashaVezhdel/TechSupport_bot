@@ -62,8 +62,8 @@ def support_work_kb(ticket_id):
 
 def server_call_kb(initiator_id):
     builder = InlineKeyboardBuilder()
-    builder.button(text="👍 Буду", callback_data=f"srv_reply|yes|{initiator_id}")
-    builder.button(text="👎 Не зможу", callback_data=f"srv_reply|no|{initiator_id}")
+    builder.button(text="👍", callback_data=f"srv_reply|yes|{initiator_id}")
+    builder.button(text="👎", callback_data=f"srv_reply|no|{initiator_id}")
     builder.adjust(2)
     return builder.as_markup()
 

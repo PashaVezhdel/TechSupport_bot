@@ -36,22 +36,12 @@ async def start_cmd_support(msg: types.Message):
         await msg.answer("👋 Вітаю у панелі техпідтримки!", reply_markup=support_main_menu())
 
 @router.message(F.text == "👥 Керування персоналом", StateFilter("*"))
-async def open_staff_management(msg: types.Message, state: FSMContext, bot: Bot):
+async def open_staff_management(msg: types.Message, state: FSMContext):
     if not is_super_admin(msg.from_user.id):
-        await msg.answer("⛔ Доступ заборонено.")
         return
 
-    data = await state.get_data()
-    old_menu_id = data.get("admin_menu_msg_id")
-
-    if old_menu_id:
-        try:
-            await bot.delete_message(chat_id=msg.chat.id, message_id=old_menu_id)
-        except Exception:
-            pass
-    
     await state.clear()
-    await msg.answer("Оберіть дію:", reply_markup=admin_management_reply_kb())
+    await msg.answer("👥 Панель керування персоналом відкрито.", reply_markup=admin_management_reply_kb())
 
 @router.message(F.text == "📋 Список адмінів")
 async def show_admin_list(msg: types.Message):
@@ -90,7 +80,7 @@ async def process_add_admin(msg: types.Message, state: FSMContext, bot: Bot):
             result_text = "⚠️ Цей користувач вже є в списку."
         
         await state.clear()
-        await msg.answer(result_text, reply_markup=admin_management_reply_kb())
+        await msg.answer(result_text)
             
     except ValueError:
         await msg.answer("❌ Це не схоже на ID. Спробуйте ще раз.")
@@ -123,15 +113,12 @@ async def finish_del_admin(query: types.CallbackQuery, state: FSMContext):
         await query.answer("❌ Помилка.", show_alert=True)
     
     await state.clear()
-    await query.message.answer("Оберіть дію:", reply_markup=admin_management_reply_kb())
 
 @router.message(F.text == "🔙 Назад до головного меню")
 async def back_to_main_menu(msg: types.Message, state: FSMContext):
     await state.clear()
-    if is_super_admin(msg.from_user.id):
-        await msg.answer("🏠 Головне меню", reply_markup=super_admin_main_menu())
-    else:
-        await msg.answer("🏠 Головне меню", reply_markup=support_main_menu())
+    kb = super_admin_main_menu() if is_super_admin(msg.from_user.id) else support_main_menu()
+    await msg.answer("🏠 Ви повернулись у головне меню.", reply_markup=kb)
 
 @router.callback_query(F.data == "admin_cancel")
 async def admin_cancel_action(query: types.CallbackQuery, state: FSMContext):
@@ -182,8 +169,6 @@ async def server_call_reaction(query: types.CallbackQuery, bot: Bot):
     original_text = query.message.html_text if query.message.html_text else query.message.caption
     if not original_text: original_text = "🔔 ВИКЛИК"
 
-    logger.info(f"Support {query.from_user.id} reacted to call: {action}")
-
     if action == "yes":
         new_text = f"{original_text}\n\n✅ <b>Ви підтвердили: 👍!</b>"
         reply_for_initiator = f"✅ <b>{responder_name}</b> відповів: <b>👍!</b>"
@@ -221,7 +206,7 @@ async def process_broadcast_text(msg: types.Message, state: FSMContext):
     await state.set_state(BroadcastForm.waiting_for_media)
     
     await msg.answer(
-        "📷 Прикріпіть медіа (фото, відео, документ) або натисніть 'Пропустити':",
+        "📷 Прикріпіть медіа (фото, відео, document) або натисніть 'Пропустити':",
         reply_markup=skip_media_kb()
     )
 
@@ -287,18 +272,13 @@ async def cancel_broadcast(query: types.CallbackQuery, state: FSMContext):
 @router.callback_query(BroadcastForm.waiting_for_confirm, F.data == "broadcast_send")
 async def send_broadcast(query: types.CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
-    content_type = data['content_type']
-    content_id = data['content_id']
-    text = data['broadcast_text']
-    admin_id = data['admin_id']
+    content_type, content_id, text, admin_id = data['content_type'], data['content_id'], data['broadcast_text'], data['admin_id']
     
     await query.message.edit_reply_markup(reply_markup=None)
     status_msg = await query.message.answer("⏳ Розсилка почалася...")
     
     users = get_all_users()
     count_ok = 0
-    count_fail = 0
-    
     for user_id in users:
         try:
             if content_type == 'photo':
@@ -311,45 +291,30 @@ async def send_broadcast(query: types.CallbackQuery, state: FSMContext, bot: Bot
                 await bot.send_message(chat_id=user_id, text=text)
             count_ok += 1
         except Exception:
-            count_fail += 1
+            pass
     
     broadcasts_collection.insert_one({
         "admin_id": admin_id,
-        "content_type": content_type,
-        "content_id": content_id,
-        "text": text,
         "recipients_count": count_ok,
         "date": datetime.utcnow()
     })
     
-    logger.info(f"Broadcast sent by {admin_id}. OK: {count_ok}, Fail: {count_fail}")
-    
     try:
         await status_msg.delete()
-    except:
+    except Exception:
         pass
 
     kb = super_admin_main_menu() if is_super_admin(query.from_user.id) else support_main_menu()
-    await query.message.answer(
-        f"✅ Розсилку завершено!\n"
-        f"Успішно: {count_ok}\n"
-        f"Не доставлено: {count_fail}",
-        reply_markup=kb
-    )
+    await query.message.answer(f"✅ Розсилку завершено! Успішно: {count_ok}", reply_markup=kb)
     await state.clear()
     await query.answer()
 
 @router.message(F.text == "📢 Активні заявки")
 async def view_all_active_tickets(msg: types.Message):
-    tickets = list(tickets_collection.find({
-        "status": {"$in": ["Очікує", "Прийнята"]}
-    }).sort("created_at", 1))
-
+    tickets = list(tickets_collection.find({"status": {"$in": ["Очікує", "Прийнята"]}}).sort("created_at", 1))
     if not tickets:
         await msg.answer("✅ Активних заявок немає.")
         return
-    
-    await msg.answer(f"Знайдено активних заявок: {len(tickets)}")
     
     for ticket in tickets:
         text = (
@@ -359,12 +324,7 @@ async def view_all_active_tickets(msg: types.Message):
             f"⚙️ Пріоритет: {ticket['priority']}"
         )
         
-        kb = None
-        if ticket['status'] == 'Очікує':
-            kb = support_accept_kb(ticket['ticket_id'])
-        else: 
-            text += f"\n\n👨‍💻 <b>Прийняв:</b> @{ticket.get('accepted_by', '???')}"
-            kb = support_work_kb(ticket['ticket_id'])
+        kb = support_accept_kb(ticket['ticket_id']) if ticket['status'] == 'Очікує' else support_work_kb(ticket['ticket_id'])
         
         try:
             if ticket.get("image"):
@@ -374,9 +334,8 @@ async def view_all_active_tickets(msg: types.Message):
                     await msg.answer_document(document=ticket["image"], caption=text, reply_markup=kb)
             else:
                 await msg.answer(text, reply_markup=kb)
-        except Exception as e:
-            logger.error(f"Media error for ticket {ticket['ticket_id']}: {e}")
-            await msg.answer(text + "\n(Медіа недоступне)", reply_markup=kb)
+        except Exception:
+            pass
 
 @router.message(F.text == "📖 Історія всіх заявок")
 async def view_history_all(msg: types.Message):
@@ -402,7 +361,6 @@ async def check_db_status(msg: types.Message):
         count = tickets_collection.count_documents({})
         await msg.answer(f"✅ З'єднання стабільне.\nВсього заявок у базі: {count}")
     except Exception as e:
-        logger.critical(f"DB Connection Error: {e}")
         await msg.answer(f"❌ Помилка з'єднання: {e}")
 
 @router.callback_query(F.data.startswith("accept|"))
@@ -410,16 +368,8 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
     ticket_id = query.data.split("|")[1]
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     
-    if not ticket:
-        await query.answer("Заявку не знайдено.", show_alert=True)
-        return
-    
-    if ticket["status"] != "Очікує":
-        await query.answer(f"Статус: {ticket['status']}", show_alert=True)
-        try:
-            await query.message.edit_reply_markup(reply_markup=None)
-        except:
-            pass
+    if not ticket or ticket["status"] != "Очікує":
+        await query.answer("Вже не актуально.", show_alert=True)
         return
 
     tickets_collection.update_one(
@@ -427,8 +377,6 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
         {"$set": {"status": "Прийнята", "accepted_by": query.from_user.username}}
     )
     
-    logger.info(f"Admin {query.from_user.id} accepted ticket {ticket_id}")
-
     await notify_user(bot, ticket["telegram_id"], 
                       f"👨‍💻 Вашу заявку #{ticket_id} прийняв оператор @{query.from_user.username}.")
 
@@ -436,7 +384,6 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
         f"<b>Заявка #{ticket_id} (В роботі)</b>\n"
         f"👤 {ticket['name']} | 📞 {ticket['phone']}\n"
         f"📄 {ticket['description']}\n"
-        f"⚙️ Пріоритет: {ticket['priority']}\n"
         f"👨‍💻 <b>Прийняв:</b> @{query.from_user.username}"
     )
     
@@ -446,8 +393,7 @@ async def accept_ticket(query: types.CallbackQuery, bot: Bot):
         else:
             await query.message.edit_text(new_text, reply_markup=support_work_kb(ticket_id))
     except Exception:
-        await query.message.answer(new_text, reply_markup=support_work_kb(ticket_id))
-        
+        pass
     await query.answer("Ви прийняли заявку!")
 
 @router.callback_query(F.data.startswith("complete|"))
@@ -456,7 +402,6 @@ async def complete_ticket(query: types.CallbackQuery, bot: Bot):
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
 
     if not ticket or ticket['status'] != "Прийнята":
-         await query.answer("Неможливо завершити.", show_alert=True)
          return
     
     tickets_collection.update_one(
@@ -464,18 +409,15 @@ async def complete_ticket(query: types.CallbackQuery, bot: Bot):
         {"$set": {"status": "Завершена"}}
     )
     
-    logger.info(f"Admin {query.from_user.id} completed ticket {ticket_id}")
     await notify_user(bot, ticket["telegram_id"], f"✅ Вашу заявку #{ticket_id} успішно виконано.")
 
-    final_text = f"✅ Заявка #{ticket_id} завершена."
     try:
         if query.message.caption:
-            await query.message.edit_caption(caption=final_text)
+            await query.message.edit_caption(caption=f"✅ Заявка #{ticket_id} завершена.")
         else:
-            await query.message.edit_text(final_text)
+            await query.message.edit_text(f"✅ Заявка #{ticket_id} завершена.")
     except Exception:
-        await query.message.answer(final_text)
-        
+        pass
     await query.answer("Готово!")
 
 @router.callback_query(F.data.startswith("reject|"))
@@ -484,17 +426,8 @@ async def reject_ticket_start(query: types.CallbackQuery, state: FSMContext):
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     
     if not ticket:
-         await query.answer("Заявку не знайдено.", show_alert=True)
          return
          
-    if ticket["status"] in ["Відхилена", "Скасована", "Завершена"]:
-        await query.answer(f"Ця заявка вже закрита.", show_alert=True)
-        try:
-            await query.message.edit_reply_markup(reply_markup=None)
-        except:
-            pass
-        return 
-    
     await state.update_data(
         ticket_id=ticket_id,
         chat_id=query.message.chat.id,
@@ -515,7 +448,6 @@ async def process_rejection_reason(msg: types.Message, state: FSMContext, bot: B
         {"ticket_id": ticket_id},
         {"$set": {"status": "Відхилена", "decline_reason": reason}}
     )
-    logger.info(f"Admin {msg.from_user.id} rejected ticket {ticket_id} (Reason: {reason})")
 
     ticket = tickets_collection.find_one({"ticket_id": ticket_id})
     if ticket:
