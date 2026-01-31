@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import sys
+import os
+from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
@@ -11,6 +13,25 @@ from app.handlers import support_handlers
 from app.handlers.error_handler import error_router
 
 async def main():
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    log_file = os.path.join('logs', f'{current_date}.log')
+
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[file_handler, console_handler]
+    )
+
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
 
@@ -29,9 +50,7 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        stream=sys.stdout
-    )
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
