@@ -7,10 +7,39 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from config import BOT_TOKEN
+from app.db.database import client, users_collection
 from app.filters.role_filters import IsSupport, IsNotSupport
 from app.handlers import user_handlers
 from app.handlers import support_handlers
 from app.handlers.error_handler import error_router
+
+async def get_super_admin_id():
+    try:
+        admin = await users_collection.find_one({"role": "super_admin"})
+        return admin['user_id'] if admin else None
+    except Exception:
+        return None
+
+async def db_health_check(bot: Bot):
+    last_status = True
+    while True:
+        try:
+            await client.admin.command('ping')
+            if not last_status:
+                admin_id = await get_super_admin_id()
+                if admin_id:
+                    await bot.send_message(admin_id, "✅ Зв'язок з MongoDB відновлено!")
+                last_status = True
+        except Exception as e:
+            if last_status:
+                admin_id = await get_super_admin_id()
+                if admin_id:
+                    try:
+                        await bot.send_message(admin_id, f"🚨 ПОМИЛКА: Втрачено зв'язок з MongoDB!\n\n{e}")
+                    except Exception:
+                        pass
+                last_status = False
+        await asyncio.sleep(60)
 
 async def main():
     if not os.path.exists('logs'):
@@ -46,6 +75,9 @@ async def main():
     dp.include_router(error_router)
     
     logging.info("Bot started...")
+    
+    asyncio.create_task(db_health_check(bot))
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
